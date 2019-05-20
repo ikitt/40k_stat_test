@@ -1,4 +1,22 @@
 =begin ###################################
+                 #TERMINOLOGIE#
+       ###################################
+
+* Figurine
+  * Cible
+* Arme
+  * ArmeCaC
+  * ArmeTir
+* Unite
+* Datasheet
+* Faction
+* Situation
+* CapaciteSpeciale
+
+       ###################################
+=end   ###################################
+
+=begin ###################################
                   #TODO LIST#
        ###################################
 
@@ -35,6 +53,12 @@ def string_avec_caractere nombre, nbr_de_carac_avant = 5, nbr_de_carac_apres = 3
     end
   end
   sortie
+end
+
+class Array
+  def copie
+    self.map{|item| item.copie}
+  end
 end
 
 module JetDes
@@ -161,6 +185,17 @@ module JetDes
     situation.instance_variable_set(jet, proba_de_base + ((1-proba_de_base)*proba_de_base))
   end
 
+  def self.arme_empoisonnee situation, score
+    score = situation.cible.mots_cles.include?('vehicule') ? 6 : score #Les arme empoisonnée blessent les véhicule sur 6+
+    p "C'est un véhicule ? #{situation.cible.mots_cles.include?('vehicule')}, : #{situation.cible.inspect}" #TRVD
+    situation.instance_variable_set('@bless_par_touche', JetDes::chance_succes_des(score))
+  end
+
+  def self.insensible_a_la_douleur situation, score
+    degat_finaux = situation.instance_variable_get('@degat_par_salve') * ((score-1).to_f / 6.0)
+    situation.instance_variable_set('@degat_par_salve', degat_finaux)
+  end
+
   class Arme
     def to_s
       @nom
@@ -232,9 +267,9 @@ module JetDes
   end
 
   class Figurine
-    attr_accessor :nom, :mouvement, :cc, :ct, :force, :endu, :pv, :attaque, :commandement, :svg_armure, :svg_invu, :distance, :capacites_speciales
+    attr_accessor :nom, :mouvement, :cc, :ct, :force, :endu, :pv, :attaque, :commandement, :svg_armure, :svg_invu, :distance, :mots_cles, :capacites_speciales, :armes
 
-    def initialize(nom, mouvement, cc, ct, force, endu, pv, attaque, commandement, svg_armure, svg_invu = nil, distance = 2, capacites_speciales = [])
+    def initialize(nom, mouvement, cc, ct, force, endu, pv, attaque, commandement, svg_armure, svg_invu = nil, distance = 2, mots_cles = [], capacites_speciales = [], armes = [])
       @nom = nom
       @mouvement = mouvement
       @pv = pv
@@ -248,7 +283,9 @@ module JetDes
       @svg_armure = svg_armure
       @svg_invu = svg_invu
       @distance = distance
+      @mots_cles = mots_cles
       @capacites_speciales = capacites_speciales
+      @armes = armes
     end
 
     def to_s
@@ -256,8 +293,8 @@ module JetDes
     end
 
     def copie
-      capacites = @capacites_speciales.map{|capa| capa.respond_to? copie ? capa.copie : capa}
-      Figurine.new(@nom, @mouvement, @cc, @ct, @force, @endu, @pv, @attaque, @commandement, @svg_armure, @svg_invu, @distance, @capacites_speciales)
+      capacites = @capacites_speciales.map{|capa| capa.respond_to?(:copie) ? capa.copie : capa}
+      Figurine.new(@nom, @mouvement, @cc, @ct, @force, @endu, @pv, @attaque, @commandement, @svg_armure, @svg_invu, @distance, @mots_cles, @capacites_speciales, @armes.copie)
     end
 
     def meilleur_save(pa)
@@ -321,13 +358,38 @@ module JetDes
   class Unite
     attr_accessor :figurines
 
-    def initialize fig
-      @figurines = fig.nil? ? [] : fig
+    def initialize fig = []
+      @figurines = fig
     end
 
     def copie
       Unite.new @figurines.map {|fig| fig.copie}
     end
+
+    def << fig
+      case fig
+      when Array
+        fig.each{|item| self << item.copie}
+      when Figurine
+        @figurines << fig
+      else
+        raise "Unite::<< autorisé pour des Figurines ou des Array de Figurine, pas pour des #{fig.class}"
+      end
+    end
+
+    def to_s
+      hash_unite = {}
+      @figurines.each do |fig|
+        hash_unite[fig.nom].nil? ? hash_unite[fig.nom] = 1 : hash_unite[fig.nom] += 1
+      end
+      retour = ""
+      hash_unite.each_with_index do |(nom, nbr), idx|
+        retour << ', ' if idx > 0
+        retour << "#{nbr} #{nom}"
+      end
+      retour
+    end
+
   end
 
   class Faction
@@ -347,9 +409,7 @@ module JetDes
 
     def << *args
       args.each do |arg|
-        p "args #{arg}"
-        p "args.class #{arg.class}, #{arg.nom}"
-        p "args.is_a? Figurine #{arg.is_a? Figurine}"
+        p "Ajoute  #{arg.nom} (#{arg.class}) à la faction #{self.nom}." + ((arg.is_a? Figurine) ? "(c'est une figurine)" : "(ce n'est pas une figurine)")
         if arg.is_a? Figurine
           @unites << arg
         elsif arg.is_a? Arme
@@ -419,10 +479,37 @@ module JetDes
     # A voir si reelement utile
     #   si utile alors peut être à voir si il ne faut pas copier arguments pour en avoir une autre instance.
     def copie
+      p " je fais une copie de #{@nom}"
       CapaciteSpeciale.new @nom, @phase, @arguments
     end
   end
 
+  class SituationUniteAttaquant
+    attr_accessor :unite_attanquante, :cible, :modificateurs, :liste_situation
+
+    attr_accessor :blessures_mortelles_par_salve, :degat_par_salve
+
+    def initialize(unite_attanquante, cible, modificateurs = [])
+      @unite_attanquante = unite_attanquante.copie
+      @cible = cible.copie
+      @modificateurs = modificateurs
+      @liste_situation = []
+      @unite_attanquante.figurines.each{|fig|@liste_situation << Situation.new(fig, fig.armes.first, @cible, @modificateurs)}
+    end
+
+    def proba court = false
+      @blessures_mortelles_par_salve = 0
+      @degat_par_salve = 0
+      liste_situation.each{|situation| situation.proba court}
+      liste_situation.each do |situation|
+        @degat_par_salve += situation.degat_par_salve
+        @blessures_mortelles_par_salve += situation.blessures_mortelles_par_salve
+      end
+      p "|| #{@unite_attanquante} qui attaque un(e) #{@cible.nom} fait #{(@degat_par_salve + @blessures_mortelles_par_salve).round(3)} dégats non sauvegardés par salve." + (@blessures_mortelles_par_salve > 0 ? "(dont #{@blessures_mortelles_par_salve} blessures mortelles)" : '') + " ||"
+      p "=> Il faut #{(@cible.pv / (@degat_par_salve + @blessures_mortelles_par_salve)).round(3)} salve pour éliminer la cible."
+    end
+
+  end
 
   class Situation
 
@@ -461,6 +548,8 @@ module JetDes
 
       nbr_attaque = (@type == 'CaC') ? @attaquant.attaque : @arme.attaque
       @degat_par_salve = nbr_attaque * @touche_par_tir * @bless_par_touche * @degat_par_bless
+
+      modif_situation 'res_final'
 
       unless court
         p "touche_par_tir #{@touche_par_tir}"
@@ -606,7 +695,7 @@ module JetDes
 
   # Fait des tableaux de stat avec l'endurance de la cible en ordonnée et la sauvegarde en abscisse
   # Les valeurs dans les tableaux sont le nombre de blessures
-  def self  .proba_complete attaquant, arme, modificateur = []
+  def self.proba_complete attaquant, arme, modificateur = []
     endurances = (1..8)
     sauvegardes = (2..7)
     sauvegardes_invu = (2..7)
@@ -659,7 +748,7 @@ module JetDes
       p separateur
     end
 
-p ""
+    p ""
     separateur = ''
     (sauvegardes_invu.size + 1).times {separateur << '-----------'}
     premiere_ligne =  " endu/invu|"
@@ -683,10 +772,16 @@ end
 #########################################
 ####          capa_standard          ####
 #########################################
+arme_empoisonnee_4 = {'phase' => 'res_blessure', 'nom' => :arme_empoisonnee, 'args' => [4]}
+
+insensible_5 = {'phase' => 'res_final', 'nom' => :insensible_a_la_douleur, 'args' => [5]}
+insensible_6 = {'phase' => 'res_final', 'nom' => :insensible_a_la_douleur, 'args' => [6]}
+
 moins_1_cc = {'phase' => 'jet_touche', 'nom' => :addition_caracteristique, 'args' => ['@attaquant', '@cc', -1]}
 plus_1_attaque = {'phase' => 'jet_touche', 'nom' => :addition_caracteristique, 'args' => ['@attaquant', '@attaque', 1]}
 plus_2_attaque = {'phase' => 'jet_touche', 'nom' => :addition_caracteristique, 'args' => ['@attaquant', '@attaque', 2]}
 fois_2_attaque = {'phase' => 'jet_touche', 'nom' => :multiplication_caracteristique, 'args' => ['@attaquant', '@attaque', 2]}
+
 relance_des_1_touche = {'phase' => 'res_touche', 'nom' => :relance_des_1, 'args' => ['@touche_par_tir']}
 relance_des_1_bless = {'phase' => 'res_blessure', 'nom' => :relance_des_1, 'args' => ['@bless_par_touche']}
 relance_complete_touche = {'phase' => 'res_touche', 'nom' => :relance_complete, 'args' => ['@touche_par_tir']}
@@ -701,13 +796,16 @@ drukhari = JetDes::Faction.new('Drukhari')
 drukhari << (cabalite = JetDes::Figurine.new('Cabalite', 7, 3, 3, 3, 3, 1, 1, 7, 5))
 drukhari << succube = JetDes::Figurine.new('Succube', 8, 2, 2, 3, 3, 5, 4, 8, 6, 4)
 drukhari << wyche = JetDes::Figurine.new('Wyche', 8, 3, 3, 3, 3, 1, 2, 7, 6, 6)
-drukhari << grotesque = JetDes::Figurine.new('Grotesque', 7, 3, 3, 5, 5, 4, 4, 8, 6, 5)
+drukhari << grotesque = JetDes::Figurine.new('Grotesque', 7, 3, 6, 5, 5, 4, 4, 8, 6, 5)
 drukhari << raider = JetDes::Figurine.new('Raider', 14, 4, 3, 6, 5, 10, 3, 7, 4, 5)
+raider.mots_cles << 'vehicule'
 drukhari << talos = JetDes::Figurine.new('Talos', 8, 3, 4, 6, 6, 7, 5, 8, 3, 5)
 
 drukhari << canon_desintegrateur = JetDes::ArmeTir.new('Canon désintégrateur', 'Assaut', 3, 36, 5, -3, 2)
 drukhari << lance_des_tenebres = JetDes::ArmeTir.new('Lance des ténèbres', 'Lourde', 1, 36, 8, -4, 'D6')
 drukhari << fusil_eclateur_sur_vehicule = JetDes::ArmeTir.new('Fusil éclateur', 'Tir rapide', 1, 24, 5, 0, 1)
+drukhari << fusil_eclateur = JetDes::ArmeTir.new('Fusil éclateur', 'Tir rapide', 2, 24, 1, 0, 1, [arme_empoisonnee_4])
+drukhari << canon_eclateur = JetDes::ArmeTir.new('Canon éclateur', 'Tir rapide', 6, 36, 1, 0, 1, [arme_empoisonnee_4])
 drukhari << fusil_disrupteur_sur_vehicule = JetDes::ArmeTir.new('Fusil disrupteur', 'Assaut', 2, 18, 4, -1, 1, [{'phase' => 'res_blessure', 'nom' => :capa_fusil_disrupteur, 'args' => []}])
 drukhari << lance_de_feu = JetDes::ArmeTir.new('Lance de feu', 'Assaut', 1, 18, 6, -5, JetDes::proba_meilleur_jet(2,6))
 drukhari << lacerateur_sur_vehicule = JetDes::ArmeTir.new('Lacérateur', 'Assaut', 3.5, 12, 6, -1, 1)
@@ -717,6 +815,7 @@ drukhari << lame_hekatari = JetDes::ArmeCaC.new('Lame Hekatari', 'utilisateur', 
 drukhari << gantlets_hydres = JetDes::ArmeCaC.new('Gantlets hydres', 'utilisateur', -1, 1, [plus_1_attaque, relance_complete_bless])
 drukhari << epees_fouets = JetDes::ArmeCaC.new('Epées fouets', 'utilisateur', -1, 1,[plus_2_attaque,#C'est plus D3 attaque
                                                                          {'phase' => 'res_touche', 'nom' => :relance_complete, 'args' => ['@touche_par_tir']}])
+drukhari << filet_et_empaleur = JetDes::ArmeCaC.new('Filet barbelé et empaleur', 'utilisateur', -1, 2,[plus_1_attaque])
 drukhari << hachoir_monstreux = JetDes::ArmeCaC.new('Hachoir monstrueux', 'utilisateur', -2, 1, [plus_1_attaque])
 drukhari << gantlets_talos = JetDes::ArmeCaC.new('Gantlets de Talos', '+2', -3, 'D3', [moins_1_cc])
 drukhari << macro_scalpel = JetDes::ArmeCaC.new('Macro Scalpel', '+1', -2, 2)
@@ -729,13 +828,16 @@ drukhari << fleaux = JetDes::ArmeCaC.new('Fléaux', 'utilisateur', 0, 1, [relanc
 # garde_imp = JetDes::Tireur.new('Imperial guard', 4)
 astra_militarum = JetDes::Faction.new('Astra Militarum')
 astra_militarum << garde_imp = JetDes::Figurine.new('Imperial guard', 6, 4, 4, 3, 3, 1, 1, 6, 5)
+astra_militarum << russ = JetDes::Figurine.new('Leman Russ', 10, 6, 4, 7, 8, 12, 3, 7, 3)
+russ.mots_cles << 'vehicule'
+p russ.inspect
+astra_militarum << chimere = JetDes::Figurine.new('Chimera', 12, 6, 4, 6, 7, 10, 3, 7, 3)
+chimere.mots_cles << 'vehicule'
+astra_militarum << bullgryn_mantlet = JetDes::Figurine.new('Bullgryn avec mantlet', 6, 3, 4, 5, 5, 3, 3, 7, 2)
+astra_militarum << bullgryn_bouclier_brute = JetDes::Figurine.new('Bullgryn avec bouclier de brute', 6, 3, 4, 5, 5, 3, 3, 7, 4, 4)
 astra_militarum << fusil_laser = JetDes::ArmeTir.new('Fusil laser', 'Tir rapide', 1, 24, 3, 0, 1)
 astra_militarum << fusil_laser_x127 = JetDes::ArmeTir.new('Fusil laser', 'Tir rapide', 127, 24, 3, 0, 1)
 astra_militarum << canon_laser = JetDes::ArmeTir.new('Canon laser', 'Lourde', 1, 48, 9, -3, 'D6')
-astra_militarum << russ = JetDes::Figurine.new('Leman Russ', 10, 6, 4, 7, 8, 12, 3, 7, 3)
-astra_militarum << chimere = JetDes::Figurine.new('Chimera', 12, 6, 4, 6, 7, 10, 3, 7, 3)
-astra_militarum << bullgryn_mantlet = JetDes::Figurine.new('Bullgryn avec mantlet', 6, 3, 4, 5, 5, 3, 3, 7, 2)
-astra_militarum << bullgryn_bouclier_brute = JetDes::Figurine.new('Bullgryn avec bouclier de brute', 6, 3, 4, 5, 5, 3, 3, 7, 4, 4)
 
 
 #########################################
@@ -756,7 +858,23 @@ tau_empire << cyclo_eclateur_ion_surcharge_tau = JetDes::ArmeTir.new('Cyclo écl
 #########################################
 imperial_knight = JetDes::Faction.new('Imperial Knight')
 imperial_knight << castellan = JetDes::Figurine.new('Knight Castellan', 10, 4, 3, 8, 8, 28, 4, 9, 3)
+castellan.mots_cles << 'vehicule'
 
+
+
+
+#########################################
+####            TYRANIDS             ####
+#########################################
+tyranids = JetDes::Faction.new('Tyranids')
+tyranids << hive_tyrant = JetDes::Figurine.new('Hive tyrant ailé', 16, 2, 3, 6, 7, 12, 4, 10, 3, 4)
+
+
+#########################################
+####          DEATH GUARD            ####
+#########################################
+death_guard = JetDes::Faction.new('Death Guard')
+death_guard << mortarion = JetDes::Figurine.new('Mortarion', 12, 2, 2, 8, 7, 18, 6, 10, 3, 4, 40, ['Monstre','Personnage'],[insensible_5])
 
 
 
@@ -793,11 +911,74 @@ JetDes::Situation.new(cabalite, lance_des_tenebres, russ, [relance_des_1_touche]
 
 JetDes::Situation.new(cabalite, canon_desintegrateur, chimere, [relance_des_1_touche]).proba true
 JetDes::Situation.new(cabalite, lance_des_tenebres, chimere, [relance_des_1_touche]).proba true
+JetDes::Situation.new(cabalite, fusil_eclateur, hive_tyrant, [relance_des_1_touche]).proba false
+JetDes::Situation.new(cabalite, fusil_eclateur, russ, [relance_des_1_touche]).proba false
 
 p "                   "
 
 JetDes::proba_complete(grotesque, hachoir_monstreux)
 JetDes::proba_complete(grotesque, hachoir_monstreux, [relance_des_1_bless])
+
+p "                   "
+p "                   "
+p "                   "
+
+wyche_lame_hekatari = wyche.copie
+wyche_lame_hekatari.armes << lame_hekatari.copie
+wyche_gantelet = wyche.copie
+wyche_gantelet.armes << gantlets_hydres.copie
+wyche_filet_et_empaleur = wyche.copie
+wyche_filet_et_empaleur.armes << filet_et_empaleur.copie
+
+wyche_x_10_gantelet = JetDes::Unite.new
+wyche_x_10_gantelet << wyche_lame_hekatari
+wyche_x_10_gantelet << wyche_lame_hekatari
+wyche_x_10_gantelet << wyche_lame_hekatari
+wyche_x_10_gantelet << wyche_lame_hekatari
+wyche_x_10_gantelet << wyche_lame_hekatari
+wyche_x_10_gantelet << wyche_lame_hekatari
+wyche_x_10_gantelet << wyche_lame_hekatari
+wyche_x_10_gantelet << wyche_filet_et_empaleur
+wyche_x_10_gantelet << wyche_gantelet
+wyche_x_10_gantelet << wyche_gantelet
+
+JetDes::SituationUniteAttaquant.new(wyche_x_10_gantelet, castellan,[relance_des_1_touche,plus_1_attaque]).proba true
+
+cabalite_fusil = cabalite.copie
+cabalite_fusil.armes << fusil_eclateur.copie
+cabalite_lacerateur = cabalite.copie
+cabalite_lacerateur.armes << lacerateur_sur_vehicule.copie
+cabalite_canon = cabalite.copie
+cabalite_canon.armes << canon_eclateur.copie
+guerrier_x_20_anti_inf = JetDes::Unite.new
+14.times {guerrier_x_20_anti_inf << cabalite_fusil}
+4.times {guerrier_x_20_anti_inf << cabalite_lacerateur}
+2.times {guerrier_x_20_anti_inf << cabalite_canon}
+
+JetDes::SituationUniteAttaquant.new(guerrier_x_20_anti_inf, mortarion, []).proba true
+
+cabalite_fusil = cabalite.copie
+cabalite_fusil.armes << fusil_eclateur.copie
+cabalite_disloqueur = cabalite.copie
+cabalite_disloqueur.armes << lance_des_tenebres.copie
+cabalite_lance = cabalite.copie
+cabalite_lance.armes << lance_des_tenebres.copie
+guerrier_x_20_anti_char = JetDes::Unite.new
+14.times {guerrier_x_20_anti_char << cabalite_fusil}
+4.times {guerrier_x_20_anti_char << cabalite_disloqueur}
+2.times {guerrier_x_20_anti_char << cabalite_lance}
+
+JetDes::SituationUniteAttaquant.new(guerrier_x_20_anti_char, mortarion, []).proba true
+
+JetDes::Situation.new(cabalite, fusil_eclateur, mortarion).proba true
+JetDes::Situation.new(cabalite, canon_eclateur, mortarion).proba true
+JetDes::Situation.new(cabalite, lacerateur_sur_vehicule, mortarion).proba true
+JetDes::Situation.new(cabalite, lance_des_tenebres, mortarion).proba true
+
+
+
+# initialize(unite_attanquante, cible, modificateurs = [])
+
 # JetDes::Situation.new(wyche, epees_fouets, garde_imp).proba_cac
 # JetDes::Situation.new(wyche, lame_hekatari, garde_imp).proba_cac
 # p "                   "
@@ -831,19 +1012,3 @@ JetDes::proba_complete(grotesque, hachoir_monstreux, [relance_des_1_bless])
 # end
 #
 # bil = Billy.new
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
